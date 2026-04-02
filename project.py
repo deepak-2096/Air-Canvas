@@ -5,191 +5,200 @@ import mediapipe as mp
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 import av
 
-# Initialize page config
+# ─── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Air Canvas", page_icon="🖌️", layout="wide")
 
-st.title("🖌️ Air Canvas - Hand Gesture Writing App")
-st.markdown("Enable your webcam and draw on the screen using hand gestures!")
+st.markdown("""
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+  html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+  .main { background: #0f0f1a; }
+  .stApp { background: #0f0f1a; color: #e0e0ff; }
+  .stSidebar { background: #1a1a2e; }
+  h1 { 
+    background: linear-gradient(135deg, #a78bfa, #60a5fa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    font-size: 2.2rem; font-weight: 700;
+  }
+</style>
+""", unsafe_allow_html=True)
 
-# --- SIDEBAR SETTINGS ---
-st.sidebar.title("App Settings")
+st.title("🖌️ Air Canvas — Hand Gesture Drawing")
+st.markdown("Draw in mid-air using hand gestures! Point your index finger to draw, show peace sign to hover, open all fingers to erase.")
 
-st.sidebar.markdown("### 🎨 Pen Properties")
-colors_map = {
-    "Red": (0, 0, 255),    # BGR format for OpenCV
-    "Green": (0, 255, 0),
-    "Blue": (255, 0, 0),
-    "Yellow": (0, 255, 255),
-    "Cyan": (255, 255, 0),
-    "Magenta": (255, 0, 255),
-    "White": (255, 255, 255)
-}
+# ─── SIDEBAR SETTINGS ────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## ⚙️ Settings")
+    st.markdown("### 🎨 Pen Color")
+    colors_map = {
+        "🔴 Red":     (0,   0,   255),
+        "🟢 Green":   (0,   255, 0),
+        "🔵 Blue":    (255, 0,   0),
+        "🟡 Yellow":  (0,   255, 255),
+        "🟣 Purple":  (180, 0,   180),
+        "⚪ White":   (255, 255, 255),
+    }
+    selected_color = st.selectbox("Color", list(colors_map.keys()), index=0)
+    brush_size     = st.slider("Brush Size",  2,  40,  6)
+    eraser_size    = st.slider("Eraser Size", 20, 150, 70)
 
-selected_color = st.sidebar.selectbox("Select Color", list(colors_map.keys()))
-brush_size = st.sidebar.slider("Brush Size", 2, 30, 5)
-eraser_size = st.sidebar.slider("Eraser Size", 20, 150, 70)
+    st.markdown("---")
+    clear_btn = st.button("🗑️ Clear Canvas", use_container_width=True)
 
-st.sidebar.markdown("---")
-clear_btn = st.sidebar.button("🗑️ Clear Canvas")
+    st.markdown("---")
+    st.markdown("### 🖐️ Gesture Guide")
+    st.info("""
+**✏️ Draw** — Only index finger up  
+**✋ Hover** — Index + Middle fingers up  
+**🧹 Erase** — All 4 fingers up  
+    """)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🖐️ Gesture Guide")
-st.sidebar.markdown("""
-- **Draw**: *Only Index Finger Up*
-- **Hover/Move**: *Index & Middle Fingers Up* (Moves cursor without drawing)
-- **Erase**: *All 4 Fingers Up* (Acts as a large eraser)
-""")
-
-
-# --- WEBRTC VIDEO PROCESSOR ---
-class HandTrackingProcessor(VideoProcessorBase):
-    def __init__(self):
-        # Initialize MediaPipe inside the thread
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            max_num_hands=1, 
-            min_detection_confidence=0.75, 
-            min_tracking_confidence=0.75
-        )
-        self.mp_draw = mp.solutions.drawing_utils
-        
-        # State variables
-        self.canvas = None
-        self.x_prev = 0
-        self.y_prev = 0
-        
-        # UI controls (updated from main thread)
-        self.color = colors_map["Red"]
-        self.brush_size = 5
-        self.eraser_size = 70
-        self.clear_canvas = False
-
-    def recv(self, frame_container):
-        # frame_container is an av.VideoFrame
-        frame = frame_container.to_ndarray(format="bgr24")
-        
-        # Flip the frame horizontally for a selfie-view display
-        frame = cv2.flip(frame, 1)
-        h, w, c = frame.shape
-        
-        # Initialize the canvas if not done yet
-        if self.canvas is None:
-            self.canvas = np.zeros((h, w, 3), dtype=np.uint8)
-            
-        # Handle manual clear request from the UI
-        if self.clear_canvas:
-            self.canvas = np.zeros((h, w, 3), dtype=np.uint8)
-            self.clear_canvas = False # reset flag
-            
-        # Convert BGR to RGB for MediaPipe processing
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = self.hands.process(rgb_frame)
-        
-        if result.multi_hand_landmarks:
-            for hand_landmarks in result.multi_hand_landmarks:
-                # Draw hand landmarks
-                self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
-                
-                # Get the pixel coordinates for specific landmarks
-                landmarks = hand_landmarks.landmark
-                
-                # We need x, y coordinates
-                lm_list = []
-                for id, lm in enumerate(landmarks):
-                    cx, cy = int(lm.x * w), int(lm.y * h)
-                    lm_list.append([id, cx, cy])
-                    
-                if len(lm_list) != 0:
-                    # Index and Middle finger tips
-                    x1, y1 = lm_list[8][1], lm_list[8][2]
-                    x2, y2 = lm_list[12][1], lm_list[12][2]
-                    
-                    # Check which fingers are up
-                    fingers = []
-                    # Tip IDs for Index, Middle, Ring, Pinky
-                    tip_ids = [8, 12, 16, 20]
-                    # PIP IDs for Index, Middle, Ring, Pinky
-                    pip_ids = [6, 10, 14, 18]
-                    
-                    for tip, pip in zip(tip_ids, pip_ids):
-                        if lm_list[tip][2] < lm_list[pip][2]:  # y is lower = finger is up
-                            fingers.append(1)
-                        else:
-                            fingers.append(0)
-                            
-                    # 1. Hover Mode: Index and Middle fingers are UP
-                    if len(fingers) >= 2 and fingers[0] == 1 and fingers[1] == 1 and fingers[2] == 0:
-                        self.x_prev, self.y_prev = x1, y1
-                        
-                        # Draw pointer indicator
-                        cv2.circle(frame, (x1, y1), 15, self.color, cv2.FILLED)
-                        
-                    # 2. Draw Mode: Only Index finger is UP
-                    elif len(fingers) >= 2 and fingers[0] == 1 and fingers[1] == 0 and fingers[2] == 0 and fingers[3] == 0:
-                        cv2.circle(frame, (x1, y1), self.brush_size, self.color, cv2.FILLED)
-                        
-                        if self.x_prev == 0 and self.y_prev == 0:
-                            self.x_prev, self.y_prev = x1, y1
-                            
-                        # Draw on the canvas
-                        cv2.line(self.canvas, (self.x_prev, self.y_prev), (x1, y1), self.color, self.brush_size)
-                        
-                        self.x_prev, self.y_prev = x1, y1
-                        
-                    # 3. Erase Mode: All 4 fingers UP
-                    elif sum(fingers) == 4:
-                        # Find center of palm roughly (using landmark 9)
-                        cx, cy = lm_list[9][1], lm_list[9][2]
-                        cv2.circle(frame, (cx, cy), self.eraser_size, (50, 50, 50), cv2.FILLED)
-                        # Erase by drawing black on canvas
-                        cv2.circle(self.canvas, (cx, cy), self.eraser_size, (0, 0, 0), cv2.FILLED)
-                        
-                    else:
-                        # Any other gesture -> reset previous points to break continuous drawing line
-                        self.x_prev, self.y_prev = 0, 0
-
-        # Combine the original frame and the canvas
-        # Method: convert canvas to grayscale, create inverse mask, apply mask to frame, add canvas
-        img_gray = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2GRAY)
-        _, img_inv = cv2.threshold(img_gray, 5, 255, cv2.THRESH_BINARY_INV)
-        img_inv = cv2.cvtColor(img_inv, cv2.COLOR_GRAY2BGR)
-        
-        # Black out the regions where drawing exists on the video frame
-        frame = cv2.bitwise_and(frame, img_inv)
-        
-        # Add the colored canvas drawing onto the video frame
-        frame = cv2.bitwise_or(frame, self.canvas)
-        
-        return av.VideoFrame.from_ndarray(frame, format="bgr24")
-
-
-# WebRTC requires STUN servers to work reliably when deployed to the cloud
+# ─── RTC CONFIG ──────────────────────────────────────────────────────────────────
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-# --- RUN WEBRTC STREAM ---
+# ─── VIDEO PROCESSOR ─────────────────────────────────────────────────────────────
+class HandTrackingProcessor(VideoProcessorBase):
+    def __init__(self):
+        # ── DO NOT init MediaPipe here — it must run inside the worker thread ──
+        self._mp_initialized = False
+
+        # Canvas state
+        self.canvas  = None
+        self.x_prev  = 0
+        self.y_prev  = 0
+
+        # Shared settings (written by main thread, read by worker thread)
+        self.color        = (0, 0, 255)
+        self.brush_size   = 6
+        self.eraser_size  = 70
+        self.clear_canvas = False
+
+    def _init_mediapipe(self):
+        """Lazy init — called once inside the worker thread on first frame."""
+        self._mp_hands = mp.solutions.hands
+        self._hands    = self._mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.75,
+            min_tracking_confidence=0.75,
+        )
+        self._mp_draw     = mp.solutions.drawing_utils
+        self._mp_initialized = True
+
+    def _fingers_up(self, lm_list):
+        """Return list [index, middle, ring, pinky] = 1 if finger extended."""
+        tip_ids = [8,  12, 16, 20]
+        pip_ids = [6,  10, 14, 18]
+        fingers = []
+        for tip, pip in zip(tip_ids, pip_ids):
+            fingers.append(1 if lm_list[tip][2] < lm_list[pip][2] else 0)
+        return fingers
+
+    def recv(self, frame_av):
+        # ── Lazy MediaPipe init inside worker thread ──
+        if not self._mp_initialized:
+            self._init_mediapipe()
+
+        frame = frame_av.to_ndarray(format="bgr24")
+        frame = cv2.flip(frame, 1)
+        h, w  = frame.shape[:2]
+
+        # Init canvas on first frame (or after size change)
+        if self.canvas is None or self.canvas.shape[:2] != (h, w):
+            self.canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # Handle clear request from sidebar button
+        if self.clear_canvas:
+            self.canvas       = np.zeros((h, w, 3), dtype=np.uint8)
+            self.clear_canvas = False
+
+        # ── MediaPipe hand detection ──
+        rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = self._hands.process(rgb)
+
+        if result.multi_hand_landmarks:
+            for hand_lms in result.multi_hand_landmarks:
+                self._mp_draw.draw_landmarks(frame, hand_lms, self._mp_hands.HAND_CONNECTIONS)
+
+                # Build landmark pixel list
+                lm_list = []
+                for idx, lm in enumerate(hand_lms.landmark):
+                    lm_list.append([idx, int(lm.x * w), int(lm.y * h)])
+
+                if len(lm_list) < 21:
+                    continue
+
+                fingers = self._fingers_up(lm_list)
+                x1, y1  = lm_list[8][1],  lm_list[8][2]   # Index fingertip
+
+                # ── HOVER mode: index + middle up ──────────────────────────
+                if fingers[0] == 1 and fingers[1] == 1 and fingers[2] == 0:
+                    cv2.circle(frame, (x1, y1), 12, self.color, cv2.FILLED)
+                    cv2.circle(frame, (x1, y1), 14, (255,255,255), 2)
+                    self.x_prev, self.y_prev = x1, y1  # update anchor without drawing
+
+                # ── DRAW mode: only index up ───────────────────────────────
+                elif fingers[0] == 1 and fingers[1] == 0:
+                    cv2.circle(frame, (x1, y1), self.brush_size, self.color, cv2.FILLED)
+                    if self.x_prev == 0 and self.y_prev == 0:
+                        self.x_prev, self.y_prev = x1, y1
+                    cv2.line(self.canvas,
+                             (self.x_prev, self.y_prev),
+                             (x1, y1),
+                             self.color, self.brush_size)
+                    self.x_prev, self.y_prev = x1, y1
+
+                # ── ERASE mode: all 4 fingers up ──────────────────────────
+                elif sum(fingers) == 4:
+                    cx, cy = lm_list[9][1], lm_list[9][2]  # palm centre
+                    cv2.circle(frame,        (cx, cy), self.eraser_size, (40, 40, 40), cv2.FILLED)
+                    cv2.circle(frame,        (cx, cy), self.eraser_size, (200,200,200), 2)
+                    cv2.circle(self.canvas,  (cx, cy), self.eraser_size, (0, 0, 0), cv2.FILLED)
+                    self.x_prev, self.y_prev = 0, 0
+
+                # ── Other gestures: break drawing line ────────────────────
+                else:
+                    self.x_prev, self.y_prev = 0, 0
+
+        # ── Blend canvas onto frame ──────────────────────────────────────────
+        gray        = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2GRAY)
+        _, inv_mask = cv2.threshold(gray, 5, 255, cv2.THRESH_BINARY_INV)
+        inv_mask    = cv2.cvtColor(inv_mask, cv2.COLOR_GRAY2BGR)
+        frame       = cv2.bitwise_and(frame, inv_mask)
+        frame       = cv2.bitwise_or(frame, self.canvas)
+
+        return av.VideoFrame.from_ndarray(frame, format="bgr24")
+
+
+# ─── WEBRTC STREAM ────────────────────────────────────────────────────────────────
 webrtc_ctx = webrtc_streamer(
     key="air-canvas",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTC_CONFIGURATION,
     video_processor_factory=HandTrackingProcessor,
     media_stream_constraints={"video": True, "audio": False},
-    async_processing=True
+    async_processing=True,
 )
 
-# Update the processor instance based on UI inputs
+# Push sidebar settings into the processor safely
 if webrtc_ctx.video_processor:
-    webrtc_ctx.video_processor.color = colors_map[selected_color]
-    webrtc_ctx.video_processor.brush_size = brush_size
+    webrtc_ctx.video_processor.color       = colors_map[selected_color]
+    webrtc_ctx.video_processor.brush_size  = brush_size
     webrtc_ctx.video_processor.eraser_size = eraser_size
-    
     if clear_btn:
         webrtc_ctx.video_processor.clear_canvas = True
 
+# ─── HOW TO USE ──────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("### How to Use:")
-st.markdown("1. Click **START** to open your webcam.")
-st.markdown("2. Grant the browser permission to access your camera.")
-st.markdown("3. Show your hand to the camera and use gestures (listed on the sidebar) to draw!")
-
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown("### ✏️ Draw")
+    st.markdown("Raise only your **index finger** and move your hand to draw on the canvas.")
+with col2:
+    st.markdown("### ✋ Hover")
+    st.markdown("Raise **index + middle fingers** (peace sign) to move without drawing.")
+with col3:
+    st.markdown("### 🧹 Erase")
+    st.markdown("Open all **4 fingers** wide to erase the area under your palm.")
