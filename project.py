@@ -2,7 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import mediapipe as mp
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 import av
 
 # Initialize page config
@@ -163,10 +163,16 @@ class HandTrackingProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(frame, format="bgr24")
 
 
+# WebRTC requires STUN servers to work reliably when deployed to the cloud
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
 # --- RUN WEBRTC STREAM ---
 webrtc_ctx = webrtc_streamer(
     key="air-canvas",
     mode=WebRtcMode.SENDRECV,
+    rtc_configuration=RTC_CONFIGURATION,
     video_processor_factory=HandTrackingProcessor,
     media_stream_constraints={"video": True, "audio": False},
     async_processing=True
